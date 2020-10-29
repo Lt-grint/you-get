@@ -66,6 +66,7 @@ SITES = {
     'iwara'            : 'iwara',
     'joy'              : 'joy',
     'kankanews'        : 'bilibili',
+    'kakao'            : 'kakao',
     'khanacademy'      : 'khan',
     'ku6'              : 'ku6',
     'kuaishou'         : 'kuaishou',
@@ -79,14 +80,13 @@ SITES = {
     'metacafe'         : 'metacafe',
     'mgtv'             : 'mgtv',
     'miomio'           : 'miomio',
+    'missevan'         : 'missevan',
     'mixcloud'         : 'mixcloud',
     'mtv81'            : 'mtv81',
-    'musicplayon'      : 'musicplayon',
     'miaopai'          : 'yixia',
     'naver'            : 'naver',
     '7gogo'            : 'nanagogo',
     'nicovideo'        : 'nicovideo',
-    'panda'            : 'panda',
     'pinterest'        : 'pinterest',
     'pixnet'           : 'pixnet',
     'pptv'             : 'pptv',
@@ -106,8 +106,6 @@ SITES = {
     'twimg'            : 'twitter',
     'twitter'          : 'twitter',
     'ucas'             : 'ucas',
-    'videomega'        : 'videomega',
-    'vidto'            : 'vidto',
     'vimeo'            : 'vimeo',
     'wanmen'           : 'wanmen',
     'weibo'            : 'miaopai',
@@ -118,6 +116,7 @@ SITES = {
     'xiaokaxiu'        : 'yixia',
     'xiaojiadianvideo' : 'fc2video',
     'ximalaya'         : 'ximalaya',
+    'xinpianchang'     : 'xinpianchang',
     'yinyuetai'        : 'yinyuetai',
     'yizhibo'          : 'yizhibo',
     'youku'            : 'youku',
@@ -144,7 +143,7 @@ fake_headers = {
     'Accept-Charset': 'UTF-8,*;q=0.5',
     'Accept-Encoding': 'gzip,deflate,sdch',
     'Accept-Language': 'en-US,en;q=0.8',
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; WOW64; rv:60.0) Gecko/20100101 Firefox/60.0',  # noqa
+    'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:64.0) Gecko/20100101 Firefox/64.0',  # noqa
 }
 
 if sys.stdout.isatty():
@@ -272,15 +271,21 @@ def matchall(text, patterns):
 def launch_player(player, urls):
     import subprocess
     import shlex
+    urls = list(urls)
+    for url in urls.copy():
+        if type(url) is list:
+            urls.extend(url)
+    urls = [url for url in urls if type(url) is str]
+    assert urls
     if (sys.version_info >= (3, 3)):
         import shutil
         exefile=shlex.split(player)[0]
         if shutil.which(exefile) is not None:
-            subprocess.call(shlex.split(player) + list(urls))
+            subprocess.call(shlex.split(player) + urls)
         else:
             log.wtf('[Failed] Cannot find player "%s"' % exefile)
     else:
-        subprocess.call(shlex.split(player) + list(urls))
+        subprocess.call(shlex.split(player) + urls)
 
 
 def parse_query_param(url, param):
@@ -624,10 +629,12 @@ def url_save(
     if refer is not None:
         tmp_headers['Referer'] = refer
     if type(url) is list:
-        file_size = urls_size(url, faker=faker, headers=tmp_headers)
+        chunk_sizes = [url_size(url, faker=faker, headers=tmp_headers) for url in url]
+        file_size = sum(chunk_sizes)
         is_chunked, urls = True, url
     else:
         file_size = url_size(url, faker=faker, headers=tmp_headers)
+        chunk_sizes = [file_size]
         is_chunked, urls = False, [url]
 
     continue_renameing = True
@@ -691,9 +698,13 @@ def url_save(
     else:
         open_mode = 'wb'
 
-    for url in urls:
+    chunk_start = 0
+    chunk_end = 0
+    for i, url in enumerate(urls):
         received_chunk = 0
-        if received < file_size:
+        chunk_start += 0 if i == 0 else chunk_sizes[i - 1]
+        chunk_end += chunk_sizes[i]
+        if received < file_size and received < chunk_end:
             if faker:
                 tmp_headers = fake_headers
             '''
@@ -703,8 +714,9 @@ def url_save(
             else:
                 headers = {}
             '''
-            if received and not is_chunked:  # only request a range when not chunked
-                tmp_headers['Range'] = 'bytes=' + str(received) + '-'
+            if received:
+                # chunk_start will always be 0 if not chunked
+                tmp_headers['Range'] = 'bytes=' + str(received - chunk_start) + '-'
             if refer:
                 tmp_headers['Referer'] = refer
 
@@ -752,8 +764,7 @@ def url_save(
                         elif not is_chunked and received == file_size:  # Download finished
                             break
                         # Unexpected termination. Retry request
-                        if not is_chunked:  # when
-                            tmp_headers['Range'] = 'bytes=' + str(received) + '-'
+                        tmp_headers['Range'] = 'bytes=' + str(received - chunk_start) + '-'
                         response = urlopen_with_retry(
                             request.Request(url, headers=tmp_headers)
                         )
@@ -916,7 +927,7 @@ def get_output_filename(urls, title, ext, output_dir, merge, **kwargs):
     if kwargs.get('part', -1) >= 0:
         result = '%s[%02d]' % (result, kwargs.get('part'))
     result = '%s.%s' % (result, merged_ext)
-    return result
+    return result.replace("'", "_")
 
 def print_user_agent(faker=False):
     urllib_default_user_agent = 'Python-urllib/%d.%d' % sys.version_info[:2]
@@ -1052,6 +1063,20 @@ def download_urls(
                 else:
                     from .processor.join_ts import concat_ts
                     concat_ts(parts, output_filepath)
+                print('Merged into %s' % output_filename)
+            except:
+                raise
+            else:
+                for part in parts:
+                    os.remove(part)
+
+        elif ext == 'mp3':
+            try:
+                from .processor.ffmpeg import has_ffmpeg_installed
+
+                assert has_ffmpeg_installed()
+                from .processor.ffmpeg import ffmpeg_concat_mp3_to_mp3
+                ffmpeg_concat_mp3_to_mp3(parts, output_filepath)
                 print('Merged into %s' % output_filename)
             except:
                 raise
@@ -1318,7 +1343,7 @@ def load_cookies(cookiefile):
         cookies = cookiejar.MozillaCookieJar()
         now = time.time()
         ignore_discard, ignore_expires = False, False
-        with open(cookiefile, 'r') as f:
+        with open(cookiefile, 'r', encoding='utf-8') as f:
             for line in f:
                 # last field may be absent, so keep any trailing tab
                 if line.endswith("\n"): line = line[:-1]
@@ -1397,12 +1422,27 @@ def load_cookies(cookiefile):
 def set_socks_proxy(proxy):
     try:
         import socks
-        socks_proxy_addrs = proxy.split(':')
-        socks.set_default_proxy(
-            socks.SOCKS5,
-            socks_proxy_addrs[0],
-            int(socks_proxy_addrs[1])
-        )
+        if '@' in proxy:
+            proxy_info = proxy.split("@")
+            socks_proxy_addrs = proxy_info[1].split(':')
+            socks_proxy_auth = proxy_info[0].split(":")
+            print(socks_proxy_auth[0]+" "+socks_proxy_auth[1]+" "+socks_proxy_addrs[0]+" "+socks_proxy_addrs[1])
+            socks.set_default_proxy(
+                socks.SOCKS5,
+                socks_proxy_addrs[0],
+                int(socks_proxy_addrs[1]),
+                True,
+                socks_proxy_auth[0],
+                socks_proxy_auth[1]
+            )
+        else:
+           socks_proxy_addrs = proxy.split(':')
+           print(socks_proxy_addrs[0]+" "+socks_proxy_addrs[1])
+           socks.set_default_proxy(
+               socks.SOCKS5,
+               socks_proxy_addrs[0],
+               int(socks_proxy_addrs[1]),
+           )
         socket.socket = socks.socksocket
 
         def getaddrinfo(*args):
@@ -1540,7 +1580,7 @@ def script_main(download, download_playlist, **kwargs):
         '--no-proxy', action='store_true', help='Never use a proxy'
     )
     proxy_grp.add_argument(
-        '-s', '--socks-proxy', metavar='HOST:PORT',
+        '-s', '--socks-proxy', metavar='HOST:PORT or USERNAME:PASSWORD@HOST:PORT',
         help='Use an SOCKS5 proxy for downloading'
     )
 
